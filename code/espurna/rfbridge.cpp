@@ -1076,8 +1076,8 @@ void _rfbApiSetup() {
 
 #if TERMINAL_SUPPORT
 
-void _rfbCommandStatusDispatch(const terminal::CommandContext& ctx, size_t id, const String& payload, RelayStatusCallback callback) {
-    auto parsed = rpcParsePayload(payload.c_str());
+void _rfbCommandStatusDispatch(::terminal::CommandContext&& ctx, size_t id, RelayStatusCallback callback) {
+    auto parsed = rpcParsePayload(ctx.argv[2].c_str());
     switch (parsed) {
     case PayloadStatus::On:
     case PayloadStatus::Off:
@@ -1092,8 +1092,8 @@ void _rfbCommandStatusDispatch(const terminal::CommandContext& ctx, size_t id, c
 
 void _rfbInitCommands() {
 
-    terminalRegisterCommand(F("RFB.SEND"), [](const terminal::CommandContext& ctx) {
-        if (ctx.argc == 2) {
+    terminalRegisterCommand(F("RFB.SEND"), [](::terminal::CommandContext&& ctx) {
+        if (ctx.argv.size() == 2) {
             rfbSend(ctx.argv[1]);
             return;
         }
@@ -1102,8 +1102,8 @@ void _rfbInitCommands() {
     });
 
 #if RELAY_SUPPORT
-    terminalRegisterCommand(F("RFB.LEARN"), [](const terminal::CommandContext& ctx) {
-        if (ctx.argc != 3) {
+    terminalRegisterCommand(F("RFB.LEARN"), [](::terminal::CommandContext&& ctx) {
+        if (ctx.argv.size() != 3) {
             terminalError(ctx, F("RFB.LEARN <ID> <STATUS>"));
             return;
         }
@@ -1114,11 +1114,11 @@ void _rfbInitCommands() {
             return;
         }
 
-        _rfbCommandStatusDispatch(ctx, id, ctx.argv[2], rfbLearn);
+        _rfbCommandStatusDispatch(std::move(ctx), id, rfbLearn);
     });
 
-    terminalRegisterCommand(F("RFB.FORGET"), [](const terminal::CommandContext& ctx) {
-        if (ctx.argc < 2) {
+    terminalRegisterCommand(F("RFB.FORGET"), [](::terminal::CommandContext&& ctx) {
+        if (ctx.argv.size() < 2) {
             terminalError(ctx, F("RFB.FORGET <ID> [<STATUS>]"));
             return;
         }
@@ -1129,8 +1129,8 @@ void _rfbInitCommands() {
             return;
         }
 
-        if (ctx.argc == 3) {
-            _rfbCommandStatusDispatch(ctx, id, ctx.argv[2], rfbForget);
+        if (ctx.argv.size() == 3) {
+            _rfbCommandStatusDispatch(std::move(ctx), id, rfbForget);
             return;
         }
 
@@ -1142,8 +1142,8 @@ void _rfbInitCommands() {
 #endif // if RELAY_SUPPORT
 
 #if RFB_PROVIDER == RFB_PROVIDER_EFM8BB1
-    terminalRegisterCommand(F("RFB.WRITE"), [](const terminal::CommandContext& ctx) {
-        if (ctx.argc != 2) {
+    terminalRegisterCommand(F("RFB.WRITE"), [](::terminal::CommandContext&& ctx) {
+        if (ctx.argv.size() != 2) {
             terminalError(ctx, F("RFB.WRITE <PAYLOAD>"));
             return;
         }
@@ -1260,6 +1260,7 @@ void _rfbSettingsMigrate(int version) {
 
 void rfbSetup() {
 #if RFB_PROVIDER == RFB_PROVIDER_EFM8BB1
+    Serial.begin(SERIAL_BAUDRATE);
     _rfb_parser.reserve(RfbParser::MessageSizeBasic);
 #elif RFB_PROVIDER == RFB_PROVIDER_RCSWITCH
 

@@ -18,6 +18,8 @@ Copyright (C) 2017-2019 by Xose Pérez <xose dot perez at gmail dot com>
 
 #include "i2c.h"
 
+#include <cstring>
+
 // -----------------------------------------------------------------------------
 // Private
 // -----------------------------------------------------------------------------
@@ -123,12 +125,13 @@ int clear(unsigned char sda, unsigned char scl) {
     pinMode(sda, INPUT_PULLUP);
     pinMode(scl, INPUT_PULLUP);
 
-    nice_delay(2500);
     // Wait 2.5 secs. This is strictly only necessary on the first power
     // up of the DS3231 module to allow it to initialize properly,
     // but is also assists in reliable programming of FioV3 boards as it gives the
     // IDE a chance to start uploaded the program
     // before existing sketch confuses the IDE by sending Serial data.
+    espurna::time::blockingDelay(
+        espurna::duration::Milliseconds(2500));
 
     // If it is held low the device cannot become the I2C master
     // I2C bus error. Could not clear SCL clock line held low
@@ -160,7 +163,8 @@ int clear(unsigned char sda, unsigned char scl) {
         int counter = 20;
         while (scl_low && (counter > 0)) {
             counter--;
-            nice_delay(100);
+            espurna::time::blockingDelay(
+                espurna::duration::Milliseconds(100));
             scl_low = (digitalRead(scl) == LOW);
         }
 
@@ -229,7 +233,7 @@ void init() {
 #if TERMINAL_SUPPORT
 
 void initTerminalCommands() {
-    terminalRegisterCommand(F("I2C.SCAN"), [](const terminal::CommandContext& ctx) {
+    terminalRegisterCommand(F("I2C.SCAN"), [](::terminal::CommandContext&& ctx) {
         unsigned char devices { 0 };
         i2c::scan([&](unsigned char address) {
             ++devices;
@@ -244,7 +248,7 @@ void initTerminalCommands() {
         terminalError(ctx, F("No devices found"));
     });
 
-    terminalRegisterCommand(F("I2C.CLEAR"), [](const terminal::CommandContext& ctx) {
+    terminalRegisterCommand(F("I2C.CLEAR"), [](::terminal::CommandContext&& ctx) {
         ctx.output.printf("result: %d\n", i2c::clear());
         terminalOK(ctx);
     });
@@ -283,7 +287,7 @@ uint8_t i2c_read_uint8(uint8_t address) {
     brzo_i2c_read(buffer, 1, false);
     brzo_i2c_end_transaction();
     return buffer[0];
-};
+}
 
 uint8_t i2c_read_uint8(uint8_t address, uint8_t reg) {
     uint8_t buffer[1] = {reg};
@@ -292,7 +296,7 @@ uint8_t i2c_read_uint8(uint8_t address, uint8_t reg) {
     brzo_i2c_read(buffer, 1, false);
     brzo_i2c_end_transaction();
     return buffer[0];
-};
+}
 
 uint16_t i2c_read_uint16(uint8_t address) {
     uint8_t buffer[2] = {0, 0};
@@ -300,7 +304,7 @@ uint16_t i2c_read_uint16(uint8_t address) {
     brzo_i2c_read(buffer, 2, false);
     brzo_i2c_end_transaction();
     return (buffer[0] * 256) | buffer[1];
-};
+}
 
 uint16_t i2c_read_uint16(uint8_t address, uint8_t reg) {
     uint8_t buffer[2] = {reg, 0};
@@ -309,7 +313,7 @@ uint16_t i2c_read_uint16(uint8_t address, uint8_t reg) {
     brzo_i2c_read(buffer, 2, false);
     brzo_i2c_end_transaction();
     return (buffer[0] * 256) | buffer[1];
-};
+}
 
 void i2c_read_buffer(uint8_t address, uint8_t * buffer, size_t len) {
     i2c::start_brzo_transaction(address);
@@ -343,7 +347,7 @@ uint8_t i2c_read_uint8(uint8_t address) {
     value = Wire.read();
     Wire.endTransmission();
     return value;
-};
+}
 
 uint8_t i2c_read_uint8(uint8_t address, uint8_t reg) {
     uint8_t value;
@@ -354,7 +358,7 @@ uint8_t i2c_read_uint8(uint8_t address, uint8_t reg) {
     value = Wire.read();
     Wire.endTransmission();
     return value;
-};
+}
 
 uint16_t i2c_read_uint16(uint8_t address) {
     uint16_t value;
@@ -363,7 +367,7 @@ uint16_t i2c_read_uint16(uint8_t address) {
     value = (Wire.read() * 256) | Wire.read();
     Wire.endTransmission();
     return value;
-};
+}
 
 uint16_t i2c_read_uint16(uint8_t address, uint8_t reg) {
     uint16_t value;
@@ -374,13 +378,45 @@ uint16_t i2c_read_uint16(uint8_t address, uint8_t reg) {
     value = (Wire.read() * 256) | Wire.read();
     Wire.endTransmission();
     return value;
-};
+}
 
 void i2c_read_buffer(uint8_t address, uint8_t * buffer, size_t len) {
     Wire.beginTransmission((uint8_t) address);
     Wire.requestFrom(address, (uint8_t) len);
     for (size_t i=0; i<len; i++) buffer[i] = Wire.read();
     Wire.endTransmission();
+}
+
+void i2c_write_uint(uint8_t address, uint16_t reg, uint32_t input, size_t size) {
+    if (size && (size <= sizeof(input))) {
+        Wire.beginTransmission(address);
+        Wire.write((reg >> 8) & 0xff);
+        Wire.write(reg & 0xff);
+
+        uint8_t buf[sizeof(input)];
+        std::memcpy(&buf[0], &input, sizeof(buf));
+
+        Wire.write(&buf[sizeof(buf) - size], size);
+        Wire.endTransmission();
+    }
+}
+
+uint32_t i2c_read_uint(uint8_t address, uint16_t reg, size_t size, bool stop) {
+    uint32_t out { 0 };
+    if (size <= sizeof(out)) {
+        Wire.beginTransmission(address);
+        Wire.write((reg >> 8) & 0xff);
+        Wire.write(reg & 0xff);
+        Wire.endTransmission(stop);
+
+        if (size == Wire.requestFrom(address, size)) {
+            for (size_t byte = 0; byte < size; --byte) {
+                out = (out << 8ul) | static_cast<uint8_t>(Wire.read());
+            }
+        }
+    }
+
+    return out;
 }
 
 #endif // I2C_USE_BRZO
@@ -413,15 +449,15 @@ uint8_t i2c_write_uint16(uint8_t address, uint16_t value) {
 uint16_t i2c_read_uint16_le(uint8_t address, uint8_t reg) {
     uint16_t temp = i2c_read_uint16(address, reg);
     return (temp / 256) | (temp * 256);
-};
+}
 
 int16_t i2c_read_int16(uint8_t address, uint8_t reg) {
     return (int16_t) i2c_read_uint16(address, reg);
-};
+}
 
 int16_t i2c_read_int16_le(uint8_t address, uint8_t reg) {
     return (int16_t) i2c_read_uint16_le(address, reg);
-};
+}
 
 // -----------------------------------------------------------------------------
 // Utils

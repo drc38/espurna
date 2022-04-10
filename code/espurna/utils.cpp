@@ -122,6 +122,27 @@ const char* getManufacturer() {
     return manufacturer;
 }
 
+String prettyDuration(espurna::duration::Seconds seconds) {
+    time_t timestamp = static_cast<time_t>(seconds.count());
+    tm spec;
+    gmtime_r(&timestamp, &spec);
+
+    char buffer[64];
+    sprintf_P(buffer, PSTR("%02dy %02dd %02dh %02dm %02ds"),
+        (spec.tm_year - 70), spec.tm_yday, spec.tm_hour,
+        spec.tm_min, spec.tm_sec);
+
+    return String(buffer);
+}
+
+String getUptime() {
+#if NTP_SUPPORT
+    return prettyDuration(systemUptime());
+#else
+    return String(systemUptime().count(), 10);
+#endif
+}
+
 String buildTime() {
 #if NTP_SUPPORT
     constexpr const time_t ts = __UNIX_TIMESTAMP__;
@@ -129,7 +150,7 @@ String buildTime() {
     gmtime_r(&ts, &timestruct);
     return ntpDateTime(&timestruct);
 #else
-    char buffer[20];
+    char buffer[32];
     snprintf_P(
         buffer, sizeof(buffer), PSTR("%04d-%02d-%02d %02d:%02d:%02d"),
         __TIME_YEAR__, __TIME_MONTH__, __TIME_DAY__,
@@ -138,30 +159,6 @@ String buildTime() {
     return String(buffer);
 #endif
 }
-
-#if NTP_SUPPORT
-
-String getUptime() {
-    time_t uptime = systemUptime();
-    tm spec;
-    gmtime_r(&uptime, &spec);
-
-    char buffer[64];
-    sprintf_P(buffer, PSTR("%02dy %02dd %02dh %02dm %02ds"),
-        (spec.tm_year - 70), spec.tm_yday, spec.tm_hour,
-        spec.tm_min, spec.tm_sec
-    );
-
-    return String(buffer);
-}
-
-#else
-
-String getUptime() {
-    return String(systemUptime(), 10);
-}
-
-#endif // NTP_SUPPORT
 
 // -----------------------------------------------------------------------------
 // SSL
@@ -210,11 +207,6 @@ double roundTo(double num, unsigned char positions) {
     double multiplier = 1;
     while (positions-- > 0) multiplier *= 10;
     return round(num * multiplier) / multiplier;
-}
-
-void nice_delay(unsigned long ms) {
-    unsigned long start = millis();
-    while (millis() - start < ms) delay(1);
 }
 
 bool isNumber(const String& value) {

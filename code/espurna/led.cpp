@@ -5,6 +5,12 @@ LED MODULE
 Copyright (C) 2016-2019 by Xose Pérez <xose dot perez at gmail dot com>
 Copyright (C) 2019-2021 by Maxim Prokhorov <prokhorov dot max at outlook dot com>
 
+To (re)create the string -> pattern decoder .ipp files, add `re2c` to the $PATH and 'run' the environment:
+```
+$ pio run -e ... -t espurna/led_pattern.re.ipp
+```
+(see scripts/pio_pre.py and scripts/espurna_utils/build.py for more info)
+
 */
 
 #include "espurna.h"
@@ -33,51 +39,16 @@ namespace {
 // - bound to 32bits, to seamlessly handle ccount conversion from the 'time source'
 // - explicitly check for the maximum number of milliseconds that may be represented with ccount
 
-// TODO: also implement a software source based on boot time in msec / usec?
-// Current NONOS esp8266 gcc + newlib do not implement clock_getttime for REALTIME and MONOTONIC types,
-// everything (system_clock, steady_clock, high_resolution_clock) goes through gettimeofday()
-// RTOS port *does* include monotonic clock through the systick counter, which seems to be implement'able
-// here as well through the use of os_timer delay and a certain fixed tick (e.g. default CONFIG_FREERTOS_HZ, set to 1000)
-
-// TODO: cpu frequency value might not always be true at build-time, detect at boot instead?
-// (also notice the discrepancy when OTA'ing between different values, as CPU *may* keep the old value)
-
 // TODO: full-width int for repeats instead of 8bit? right now, string parser will *force* [min:max] range,
 // but anything else is experiencing overflow mechanics
 
-namespace time {
-
-using Tick = uint32_t;
-
-using Milliseconds = std::chrono::duration<Tick, std::milli>;
-using ClockCycles = std::chrono::duration<Tick, std::ratio<1, F_CPU>>;
-
-constexpr auto ClockCyclesMax = ClockCycles(ClockCycles::max());
-constexpr auto MillisecondsMax = std::chrono::duration_cast<Milliseconds>(ClockCyclesMax);
-
-struct ClockCyclesSource {
-    using rep = Tick;
-    using duration = ClockCycles;
-    using period = duration::period;
-    using time_point = std::chrono::time_point<ClockCyclesSource, duration>;
-
-    static constexpr bool is_steady { true };
-
-    // `"rsr %0, ccount\n" : "=a" (out) :: "memory"` on xtensa
-    // or "soc_get_ccount()" with esp8266-idf
-    // or "cpu_hal_get_cycle_count()" with esp-idf
-    // (and notably, every one of them is 32bit as the Tick)
-    static time_point now() noexcept {
-        return time_point(duration(esp_get_cycle_count()));
-    }
-};
-
-} // namespace time
-
 struct Delay {
-    using Duration = time::ClockCycles;
-    using Source = time::ClockCyclesSource;
+    using Source = espurna::time::CpuClock;
+    using Duration = Source::duration;
     using TimePoint = Source::time_point;
+
+    static constexpr auto ClockCyclesMax = Duration(Duration::max());
+    static constexpr auto MillisecondsMax = std::chrono::duration_cast<espurna::duration::Milliseconds>(ClockCyclesMax);
 
     using Repeats = unsigned char;
     static constexpr Repeats RepeatsMin { std::numeric_limits<Repeats>::min() };
@@ -120,6 +91,9 @@ private:
     Duration _off;
     Repeats _repeats;
 };
+
+constexpr espurna::duration::ClockCycles Delay::ClockCyclesMax;
+constexpr espurna::duration::Milliseconds Delay::MillisecondsMax;
 
 struct Pattern {
     using Delays = std::vector<Delay>;
@@ -390,7 +364,7 @@ bool Led::toggle() {
     return status(!status());
 }
 
-#include "led_pattern.re.cpp.inc"
+#include "led_pattern.re.ipp"
 
 } // namespace
 } // namespace led
@@ -438,10 +412,8 @@ String serialize(LedMode mode) {
     return String(static_cast<int>(mode), 10);
 }
 
-// TODO: public timestamp & cputick types
-
 #if 0
-String serialize(time::ClockCycles value) {
+String serialize(espurna::duration::ClockCycles value) {
     String out;
     out.reserve(16);
 
@@ -601,24 +573,15 @@ void migrate(int version) {
 // For network-based modes, indefinitely cycle ON <-> OFF
 // (TODO: template params containing structs like duration need -std=c++2a)
 
-template <time::Tick On, time::Tick Off>
-struct StaticDelay {
-    static constexpr auto MillisecondsOn = time::Milliseconds(On);
-    static constexpr auto MillisecondsOff = time::Milliseconds(Off);
-
-    static_assert(MillisecondsOn <= time::MillisecondsMax, "");
-    static_assert(MillisecondsOff <= time::MillisecondsMax, "");
-
-    static constexpr auto DurationOn = std::chrono::duration_cast<Delay::Duration>(MillisecondsOn);
-    static constexpr auto DurationOff = std::chrono::duration_cast<Delay::Duration>(MillisecondsOff);
-
-    constexpr operator Delay() const {
-        return Delay{DurationOn, DurationOff, Delay::RepeatsMin};
-    }
-};
-
 #define LED_STATIC_DELAY(NAME, ON, OFF)\
-    constexpr Delay NAME = StaticDelay<ON, OFF>{}
+    static constexpr auto NAME ## MillisecondsOn = espurna::duration::Milliseconds(ON);\
+    static constexpr auto NAME ## MillisecondsOff = espurna::duration::Milliseconds(OFF);\
+    static_assert(NAME ## MillisecondsOn < Delay::MillisecondsMax, "");\
+    static_assert(NAME ## MillisecondsOff < Delay::MillisecondsMax, "");\
+    static constexpr Delay NAME = Delay {\
+        std::chrono::duration_cast<Delay::Duration>(NAME ## MillisecondsOn),\
+        std::chrono::duration_cast<Delay::Duration>(NAME ## MillisecondsOff),\
+        Delay::RepeatsMin }
 
 LED_STATIC_DELAY(NetworkConnected, 100, 4900);
 LED_STATIC_DELAY(NetworkConnectedInverse, 4900, 100);
@@ -828,10 +791,12 @@ void pattern(Led& led, Pattern&& other) {
 }
 
 void run(Led& led, const Delay& delay) {
-    static auto clock_last = time::ClockCyclesSource::now();
+    using TimeSource = espurna::time::CpuClock;
+
+    static auto clock_last = TimeSource::now();
     static auto delay_for = delay.on();
 
-    const auto clock_current = time::ClockCyclesSource::now();
+    const auto clock_current = TimeSource::now();
     if (clock_current - clock_last >= delay_for) {
         delay_for = led.toggle() ? delay.on() : delay.off();
         clock_last = clock_current;
@@ -1064,8 +1029,8 @@ void onConnected(JsonObject& root) {
 namespace terminal {
 
 void setup() {
-    terminalRegisterCommand(F("LED"), [](const ::terminal::CommandContext& ctx) {
-        if (ctx.argc > 1) {
+    terminalRegisterCommand(F("LED"), [](::terminal::CommandContext&& ctx) {
+        if (ctx.argv.size() > 1) {
             size_t id;
             if (!tryParseId(ctx.argv[1].c_str(), ledCount, id)) {
                 terminalError(ctx, F("Invalid ledID"));
@@ -1073,7 +1038,7 @@ void setup() {
             }
 
             auto& led = internal::leds[id];
-            if (ctx.argc > 2) {
+            if (ctx.argv.size() > 2) {
                 led.mode(LedMode::Manual);
                 pattern(led, Pattern(ctx.argv[2]));
             } else {

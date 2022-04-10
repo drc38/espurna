@@ -257,8 +257,8 @@ std::vector<String> settingsKeys() {
     return keys;
 }
 
-void settingsRegisterDefaults(const char* const prefix, settings::RetrieveDefault retrieve) {
-    settings::internal::matchers.emplace_front(prefix, retrieve);
+void settingsRegisterDefaults(String prefix, settings::RetrieveDefault retrieve) {
+    settings::internal::matchers.emplace_front(std::move(prefix), retrieve);
 }
 
 String settingsQueryDefaults(const String& key) {
@@ -349,11 +349,11 @@ String getSetting(const SettingsKey& key) {
 }
 
 String getSetting(const SettingsKey& key, const char* defaultValue) {
-    return getSetting(key, std::move(String(defaultValue)));
+    return getSetting(key, String(defaultValue));
 }
 
 String getSetting(const SettingsKey& key, const __FlashStringHelper* defaultValue) {
-    return getSetting(key, std::move(String(defaultValue)));
+    return getSetting(key, String(defaultValue));
 }
 
 String getSetting(const SettingsKey& key, const String& defaultValue) {
@@ -494,7 +494,7 @@ void settingsGetJson(JsonObject& root) {
 namespace {
 
 void _settingsInitCommands() {
-    terminalRegisterCommand(F("CONFIG"), [](const terminal::CommandContext& ctx) {
+    terminalRegisterCommand(F("CONFIG"), [](::terminal::CommandContext&& ctx) {
         // TODO: enough of a buffer?
         DynamicJsonBuffer jsonBuffer(1024);
         JsonObject& root = jsonBuffer.createObject();
@@ -503,10 +503,10 @@ void _settingsInitCommands() {
         terminalOK(ctx);
     });
 
-    terminalRegisterCommand(F("KEYS"), [](const terminal::CommandContext& ctx) {
+    terminalRegisterCommand(F("KEYS"), [](::terminal::CommandContext&& ctx) {
         auto keys = settingsKeys();
 
-        ctx.output.printf_P(PSTR("Current settings:"));
+        ctx.output.print(F("Current settings:"));
 
         String value;
         for (unsigned int i=0; i<keys.size(); i++) {
@@ -522,8 +522,8 @@ void _settingsInitCommands() {
         terminalOK(ctx);
     });
 
-    terminalRegisterCommand(F("DEL"), [](const terminal::CommandContext& ctx) {
-        if (ctx.argc < 2) {
+    terminalRegisterCommand(F("DEL"), [](::terminal::CommandContext&& ctx) {
+        if (ctx.argv.size() < 2) {
             terminalError(ctx, F("del <key> [<key>...]"));
             return;
         }
@@ -540,8 +540,8 @@ void _settingsInitCommands() {
         }
     });
 
-    terminalRegisterCommand(F("SET"), [](const terminal::CommandContext& ctx) {
-        if (ctx.argc != 3) {
+    terminalRegisterCommand(F("SET"), [](::terminal::CommandContext&& ctx) {
+        if (ctx.argv.size() != 3) {
             terminalError(ctx, F("set <key> <value>"));
             return;
         }
@@ -554,8 +554,8 @@ void _settingsInitCommands() {
         terminalError(ctx, F("could not set the key"));
     });
 
-    terminalRegisterCommand(F("GET"), [](const terminal::CommandContext& ctx) {
-        if (ctx.argc < 2) {
+    terminalRegisterCommand(F("GET"), [](::terminal::CommandContext&& ctx) {
+        if (ctx.argv.size() < 2) {
             terminalError(ctx, F("get <key> [<key>...]"));
             return;
         }
@@ -580,18 +580,18 @@ void _settingsInitCommands() {
         terminalOK(ctx);
     });
 
-    terminalRegisterCommand(F("RELOAD"), [](const terminal::CommandContext& ctx) {
+    terminalRegisterCommand(F("RELOAD"), [](::terminal::CommandContext&& ctx) {
         espurnaReload();
         terminalOK(ctx);
     });
 
-    terminalRegisterCommand(F("FACTORY.RESET"), [](const terminal::CommandContext& ctx) {
+    terminalRegisterCommand(F("FACTORY.RESET"), [](::terminal::CommandContext&& ctx) {
         factoryReset();
         terminalOK(ctx);
     });
 
 #if not SETTINGS_AUTOSAVE
-    terminalRegisterCommand(F("SAVE"), [](const terminal::CommandContext& ctx) {
+    terminalRegisterCommand(F("SAVE"), [](::terminal::CommandContext&& ctx) {
         eepromCommit();
         terminalOK(ctx);
     });

@@ -2,7 +2,9 @@ name: PlatformIO Build
 
 on:
   push:
-    branches: [dev]
+    branches:
+      - dev
+      - 'test/**'
     tags-ignore: '**'
   pull_request:
     branches: [dev]
@@ -68,7 +70,7 @@ jobs:
       uses: actions/cache@v2
       with:
         path: ~/.platformio
-        key: ${{ runner.os }}-${{ hashFiles('code/platformio.ini') }}
+        key: ${{ runner.os }}-${{ matrix.env }}-${{ hashFiles('code/platformio.ini') }}
     - name: PlatformIO prepare
       run: |
         git config --global advice.detachedHead false

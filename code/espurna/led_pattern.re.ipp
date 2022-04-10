@@ -31,12 +31,12 @@ Pattern::Pattern(const char* begin, const char* end) {
     const char* YYMARKER;
 
 loop:
-#line 35 "espurna\\led_pattern.re.cpp.inc"
+#line 35 "espurna\\led_pattern.re.ipp"
 const char *yyt1;const char *yyt2;const char *yyt3;
 #line 32 "espurna\\led_pattern.re"
 
 
-#line 40 "espurna\\led_pattern.re.cpp.inc"
+#line 40 "espurna\\led_pattern.re.ipp"
 	{
 		char yych;
 		yych = (char)*YYCURSOR;
@@ -55,7 +55,7 @@ yy2:
 yy3:
 #line 46 "espurna\\led_pattern.re"
 		{ return; }
-#line 59 "espurna\\led_pattern.re.cpp.inc"
+#line 59 "espurna\\led_pattern.re.ipp"
 yy4:
 		yych = (char)*++YYCURSOR;
 		switch (yych) {
@@ -66,7 +66,7 @@ yy4:
 yy6:
 #line 48 "espurna\\led_pattern.re"
 		{ goto loop; }
-#line 70 "espurna\\led_pattern.re.cpp.inc"
+#line 70 "espurna\\led_pattern.re.ipp"
 yy7:
 		yych = (char)*(YYMARKER = ++YYCURSOR);
 		switch (yych) {
@@ -124,11 +124,11 @@ yy17:
 		{
             memcpy(buffer, on1, on2 - on1);
             buffer[on2 - on1] = '\0';
-            time::Tick on { strtoul(buffer, nullptr, 10) };
+            espurna::duration::Milliseconds::rep on { strtoul(buffer, nullptr, 10) };
 
             memcpy(buffer, off1, off2 - off1);
             buffer[off2 - off1] = '\0';
-            time::Tick off { strtoul(buffer, nullptr, 10) };
+            espurna::duration::Milliseconds::rep off { strtoul(buffer, nullptr, 10) };
 
             memcpy(buffer, repeat1, repeat2 - repeat1);
             buffer[repeat2 - repeat1] = '\0';
@@ -138,19 +138,19 @@ yy17:
 
             constexpr Repeats RepeatsMax { Delay::RepeatsMax };
             _delays.emplace_back(
-                std::min(time::Milliseconds(on), time::MillisecondsMax),
-                std::min(time::Milliseconds(off), time::MillisecondsMax),
+                std::min(espurna::duration::Milliseconds(on), Delay::MillisecondsMax),
+                std::min(espurna::duration::Milliseconds(off), Delay::MillisecondsMax),
                 std::min(repeats, RepeatsMax));
 
             if (repeats) {
                 goto loop;
             }
         }
-#line 150 "espurna\\led_pattern.re.cpp.inc"
+#line 150 "espurna\\led_pattern.re.ipp"
 yy18:
 #line 45 "espurna\\led_pattern.re"
 		{ return; }
-#line 154 "espurna\\led_pattern.re.cpp.inc"
+#line 154 "espurna\\led_pattern.re.ipp"
 	}
 #line 75 "espurna\\led_pattern.re"
 

@@ -894,7 +894,7 @@ void buttonEvent(size_t id, ButtonEvent event) {
         break;
 
     case ButtonAction::Reset:
-        deferredReset(100, CustomResetReason::Button);
+        prepareReset(CustomResetReason::Button);
         break;
 
     case ButtonAction::FactoryReset:
@@ -1144,7 +1144,7 @@ BasePinPtr _buttonGpioPin(size_t index, ButtonProvider provider) {
             break;
         }
 
-        result = std::move(base->pin(pin));
+        result = base->pin(pin);
 #endif
         break;
     }
@@ -1257,7 +1257,7 @@ void buttonSetup() {
     DEBUG_MSG_P(PSTR("[BUTTON] Number of buttons: %u\n"), count);
 
 #if TERMINAL_SUPPORT
-    terminalRegisterCommand(F("BUTTON"), [](const terminal::CommandContext& ctx) {
+    terminalRegisterCommand(F("BUTTON"), [](::terminal::CommandContext&& ctx) {
         unsigned index { 0u };
         for (auto& button : _buttons) {
             ctx.output.printf_P(PSTR("%u - "), index++);

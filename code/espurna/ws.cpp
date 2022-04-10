@@ -75,7 +75,7 @@ void EnumerableConfig::operator()(const __FlashStringHelper* name, Iota iota, Ch
     }
 }
 
-const char EnumerableConfig::SchemaKey[] PROGMEM = "schema";
+alignas(4) const char EnumerableConfig::SchemaKey[] PROGMEM = "schema";
 static_assert(alignof(EnumerableConfig::SchemaKey) == 4, "");
 
 } // namespace ws
@@ -87,15 +87,37 @@ static_assert(alignof(EnumerableConfig::SchemaKey) == 4, "");
 
 namespace {
 
-uint32_t _ws_last_update = 0;
+template <typename T>
+struct BaseTimeFormat {
+};
 
-void _wsResetUpdateTimer() {
-    _ws_last_update = millis() + WS_UPDATE_INTERVAL;
-}
+template <>
+struct BaseTimeFormat<int> {
+    static constexpr size_t Size = sizeof(int);
+    static constexpr char Format[] = "%d";
+};
+
+constexpr char BaseTimeFormat<int>::Format[];
+
+template <>
+struct BaseTimeFormat<long> {
+    static constexpr size_t Size = sizeof(long);
+    static constexpr char Format[] = "%ld";
+};
+
+constexpr char BaseTimeFormat<long>::Format[];
+
+template <>
+struct BaseTimeFormat<long long> {
+    static constexpr size_t Size = sizeof(long long);
+    static constexpr char Format[] = "%lld";
+};
+
+constexpr char BaseTimeFormat<long long>::Format[];
 
 void _wsUpdate(JsonObject& root) {
     root["heap"] = systemFreeHeap();
-    root["uptime"] = systemUptime();
+    root["uptime"] = systemUptime().count();
     root["rssi"] = WiFi.RSSI();
     root["loadaverage"] = systemLoadAverage();
     if (ADC_MODE_VALUE == ADC_VCC) {
@@ -104,17 +126,15 @@ void _wsUpdate(JsonObject& root) {
         root["vcc"] = "N/A (TOUT) ";
     }
 #if NTP_SUPPORT
-    // XXX: arduinojson default config stores:
-    // - double as float
-    // - int64_t as int32_t
-    // Simply send the string...
     if (ntpSynced()) {
         auto info = ntpInfo();
 
-        constexpr size_t TimeSize { sizeof(time_t) };
-        const char* const fmt = (TimeSize == 8) ? "%lld" : "%ld";
-        char buffer[TimeSize * 4];
-        sprintf(buffer, fmt, info.now);
+        // XXX: arduinojson default config will silently downcast
+        //      double to float and (u)int64_t to (u)int32_t.
+        //      convert to string instead, and assume the int is handled correctly
+        using SystemTimeFormat = BaseTimeFormat<time_t>;
+        char buffer[SystemTimeFormat::Size * 4];
+        sprintf(buffer, SystemTimeFormat::Format, info.now);
         root["now"] = String(buffer);
 
         root["nowString"] = info.utc;
@@ -125,10 +145,21 @@ void _wsUpdate(JsonObject& root) {
 #endif
 }
 
+constexpr espurna::duration::Seconds WsUpdateInterval { WS_UPDATE_INTERVAL };
+espurna::time::CoreClock::time_point _ws_last_update;
+
+void _wsResetUpdateTimer() {
+    _ws_last_update = espurna::time::millis() + WsUpdateInterval;
+}
+
 void _wsDoUpdate(const bool connected) {
-    if (!connected) return;
-    if (millis() - _ws_last_update > WS_UPDATE_INTERVAL) {
-        _ws_last_update = millis();
+    if (!connected) {
+        return;
+    }
+
+    auto ts = decltype(_ws_last_update)::clock::now();
+    if (ts - _ws_last_update > WsUpdateInterval) {
+        _ws_last_update = ts;
         wsSend(_wsUpdate);
     }
 }
@@ -238,6 +269,7 @@ ws_callbacks_t& ws_callbacks_t::onKeyCheck(ws_callbacks_t::on_keycheck_f cb) {
 namespace {
 
 constexpr size_t WsMaxClients { WS_MAX_CLIENTS };
+constexpr espurna::duration::Seconds WsTimeout { WS_TIMEOUT };
 
 WsTicket _ws_tickets[WsMaxClients];
 
@@ -248,29 +280,32 @@ void _onAuth(AsyncWebServerRequest* request) {
     }
 
     IPAddress ip = request->client()->remoteIP();
-    unsigned long now = millis();
+    auto now = WsTicket::TimeSource::now();
 
-    size_t index;
-    for (index = 0; index < WsMaxClients; ++index) {
-        if (_ws_tickets[index].ip == ip) break;
-        if (_ws_tickets[index].timestamp == 0) break;
-        if (now - _ws_tickets[index].timestamp > WS_TIMEOUT) break;
+    auto it = std::begin(_ws_tickets);
+    while (it != std::end(_ws_tickets)) {
+        if (!(*it).ip.isSet()
+            || ((*it).ip == ip)
+            || (now - (*it).timestamp > WsTimeout)) {
+            break;
+        }
     }
-    if (index == WS_MAX_CLIENTS) {
-        request->send(429);
-    } else {
-        _ws_tickets[index].ip = ip;
-        _ws_tickets[index].timestamp = now;
+
+    if (it != std::end(_ws_tickets)) {
+        (*it).ip = ip;
+        (*it).timestamp = now;
         request->send(200, "text/plain", "OK");
+        return;
     }
 
+    request->send(429);
 }
 
 void _wsAuthUpdate(AsyncWebSocketClient* client) {
     IPAddress ip = client->remoteIP();
     for (auto& ticket : _ws_tickets) {
         if (ticket.ip == ip) {
-            ticket.timestamp = millis();
+            ticket.timestamp = WsTicket::TimeSource::now();
             break;
         }
     }
@@ -278,11 +313,11 @@ void _wsAuthUpdate(AsyncWebSocketClient* client) {
 
 bool _wsAuth(AsyncWebSocketClient* client) {
     IPAddress ip = client->remoteIP();
-    unsigned long now = millis();
+    auto now = WsTicket::TimeSource::now();
 
     for (auto& ticket : _ws_tickets) {
         if (ticket.ip == ip) {
-            if (now - ticket.timestamp < WS_TIMEOUT) {
+            if (now - ticket.timestamp < WsTimeout) {
                 return true;
             }
             return false;
@@ -486,7 +521,7 @@ void _wsParse(AsyncWebSocketClient *client, uint8_t * payload, size_t length) {
         }
 
         if (strcmp(action, "reboot") == 0) {
-            deferredReset(100, CustomResetReason::Web);
+            prepareReset(CustomResetReason::Web);
             return;
         }
 
@@ -695,15 +730,18 @@ void _wsHandlePostponedCallbacks(bool connected) {
     auto& callbacks = _ws_queue.front();
 
     // avoid stalling forever when can't send anything
-    constexpr decltype(ESP.getCycleCount()) WsQueueTimeoutClockCycles = microsecondsToClockCycles(10 * 1000 * 1000); // 10s
-    if (ESP.getCycleCount() - callbacks.timestamp > WsQueueTimeoutClockCycles) {
+    using TimeSource = espurna::time::CpuClock;
+    using CpuSeconds = std::chrono::duration<TimeSource::rep>;
+
+    constexpr CpuSeconds WsQueueTimeoutClockCycles { 10 };
+    if (TimeSource::now() - callbacks.timestamp() > WsQueueTimeoutClockCycles) {
         _ws_queue.pop();
         return;
     }
 
-    // client_id == 0 means we need to send the message to every client
-    if (callbacks.client_id) {
-        AsyncWebSocketClient* ws_client = _ws.client(callbacks.client_id);
+    // client id equal to 0 means we need to send the message to every client
+    if (callbacks.id()) {
+        AsyncWebSocketClient* ws_client = _ws.client(callbacks.id());
 
         // ...but, we need to check if client is still connected
         if (!ws_client) {
@@ -726,8 +764,8 @@ void _wsHandlePostponedCallbacks(bool connected) {
     JsonObject& root = jsonBuffer.createObject();
 
     callbacks.send(root);
-    if (callbacks.client_id) {
-        wsSend(callbacks.client_id, root);
+    if (callbacks.id()) {
+        wsSend(callbacks.id(), root);
     } else {
         wsSend(root);
     }
