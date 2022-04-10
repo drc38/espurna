@@ -862,7 +862,7 @@
 #endif
 
 #ifndef NTC_DELAY
-#define NTC_DELAY                       0       // Delay between samples in micros
+#define NTC_DELAY                       100       // Delay between samples in micros
 #endif
 
 #ifndef NTC_R_UP
@@ -870,7 +870,7 @@
 #endif
 
 #ifndef NTC_R_DOWN
-#define NTC_R_DOWN                      10000   // Resistor downstream, set to 0 if none
+#define NTC_R_DOWN                      11500   // Resistor downstream, set to 0 if none
 #endif
 
 #ifndef NTC_T0
@@ -882,7 +882,7 @@
 #endif
 
 #ifndef NTC_BETA
-#define NTC_BETA                        3977    // Beta coeficient
+#define NTC_BETA                        3950    // Beta coeficient
 #endif
 
 //------------------------------------------------------------------------------

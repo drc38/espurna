@@ -170,7 +170,7 @@
 //#define TONBUX_XSSSA06
 //#define TUYA_GENERIC_DIMMER
 //#define VANZAVANZU_SMART_WIFI_PLUG_MINI
-//#define WEMOS_D1_MINI
+#define WEMOS_D1_MINI
 //#define WEMOS_D1_MINI_RELAYSHIELD
 //#define WEMOS_D1_TARPUNA_SHIELD
 //#define WION_50055
@@ -200,17 +200,17 @@
 //#define DOMOTICZ_SUPPORT       0
 //#define ENCODER_SUPPORT        1
 //#define HOMEASSISTANT_SUPPORT  0
-//#define I2C_SUPPORT            1
+#define I2C_SUPPORT            1
 //#define INFLUXDB_SUPPORT       1
 //#define IR_SUPPORT             1
-//#define LED_SUPPORT            0
+#define LED_SUPPORT            0
 //#define LLMNR_SUPPORT          1
 //#define MDNS_SERVER_SUPPORT    0
 //#define MQTT_SUPPORT           0
 //#define NETBIOS_SUPPORT        1
 //#define NOFUSS_SUPPORT         1
 //#define NTP_SUPPORT            0
-//#define OTA_ARDUINOOTA_SUPPORT 1
+#define OTA_ARDUINOOTA_SUPPORT 1
 //#define RFM69_SUPPORT          1
 //#define RFB_SUPPORT            1
 //#define RPN_RULES_SUPPORT      0
@@ -259,7 +259,7 @@
 //#define PZEM004T_SUPPORT       1
 //#define SDS011_SUPPORT         1
 //#define SENSEAIR_SUPPORT       1
-//#define SHT3X_I2C_SUPPORT      1
+#define SHT3X_I2C_SUPPORT      1
 //#define SI7021_SUPPORT         1
 //#define SM300D2_SUPPORT        1
 //#define SONAR_SUPPORT          1
