@@ -35,34 +35,57 @@ int __get_adc_mode() {
     return (int) (ADC_MODE_VALUE);
 }
 
+// Exposed through libphy.a in the current NONOS, may be replaced with a direct call to `os_random()` / `esp_random()`
+extern "C" unsigned long adc_rand_noise;
+
+// -----------------------------------------------------------------------------
+
+namespace espurna {
+namespace system {
+namespace settings {
+
+namespace options {
+namespace internal {
+namespace {
+
+alignas(4) static constexpr char None[] PROGMEM = "none";
+alignas(4) static constexpr char Once[] PROGMEM = "once";
+alignas(4) static constexpr char Repeat[] PROGMEM = "repeat";
+
+} // namespace
+} // namespace internal
+
+namespace {
+
+static constexpr ::settings::options::Enumeration<heartbeat::Mode> HeartbeatModeOptions[] PROGMEM {
+    {heartbeat::Mode::None, internal::None},
+    {heartbeat::Mode::Once, internal::Once},
+    {heartbeat::Mode::Repeat, internal::Repeat},
+};
+
+} // namespace
+} // namespace options
+} // namespace settings
+} // namespace system
+} // namespace espurna
+
 // -----------------------------------------------------------------------------
 
 namespace settings {
 namespace internal {
+namespace {
+
+using espurna::system::settings::options::HeartbeatModeOptions;
+
+} // namespace
 
 template <>
 espurna::heartbeat::Mode convert(const String& value) {
-    auto len = value.length();
-    if (len == 1) {
-        switch (*value.c_str()) {
-        case '0':
-            return espurna::heartbeat::Mode::None;
-        case '1':
-            return espurna::heartbeat::Mode::Once;
-        case '2':
-            return espurna::heartbeat::Mode::Repeat;
-        }
-    } else if (len > 1) {
-        if (value == F("none")) {
-            return espurna::heartbeat::Mode::None;
-        } else if (value == F("once")) {
-            return espurna::heartbeat::Mode::Once;
-        } else if (value == F("repeat")) {
-            return espurna::heartbeat::Mode::Repeat;
-        }
-    }
+    return convert(HeartbeatModeOptions, value, espurna::heartbeat::Mode::Repeat);
+}
 
-    return espurna::heartbeat::Mode::Repeat;
+String serialize(espurna::heartbeat::Mode mode) {
+    return serialize(HeartbeatModeOptions, mode);
 }
 
 template <>
@@ -73,6 +96,18 @@ std::chrono::duration<float> convert(const String& value) {
 template <>
 espurna::duration::Milliseconds convert(const String& value) {
     return espurna::duration::Milliseconds(convert<espurna::duration::Milliseconds::rep>(value));
+}
+
+String serialize(espurna::duration::Seconds value) {
+    return serialize(value.count());
+}
+
+String serialize(espurna::duration::Milliseconds value) {
+    return serialize(value.count());
+}
+
+String serialize(espurna::duration::ClockCycles value) {
+    return serialize(value.count());
 }
 
 template <>
@@ -86,13 +121,43 @@ espurna::duration::Seconds convert(const String& value) {
 // -----------------------------------------------------------------------------
 
 namespace espurna {
+namespace system {
+
+uint32_t RandomDevice::operator()() const {
+    // Repeating SDK source, XORing some ADC-based noise and a HW register exposing the random generator
+    // - https://github.com/espressif/ESP8266_RTOS_SDK/blob/d45071563cebe9ca520cbed2537dc840b4d6a1e6/components/esp8266/source/hw_random.c
+    // - disassembled source of the `os_random` -> `r_rand` -> `phy_get_rand`
+    //   (and avoiding these two additional `call`s)
+
+    // aka WDEV_COUNT_REG, base address
+    static constexpr uintptr_t BaseAddress { 0x3ff20c00 };
+    // aka WDEV_RAND, the actual register address
+    static constexpr uintptr_t Address  { BaseAddress + 0x244 };
+
+    return adc_rand_noise ^ *(reinterpret_cast<volatile uint32_t*>(Address));
+}
+
+} // namespace system
+
 namespace time {
 
-void blockingDelay(CoreClock::duration timeout, CoreClock::duration interval) {
-    auto start = CoreClock::now();
-    while (CoreClock::now() - start < timeout) {
-        delay(interval);
+// c/p from the Core 3.1.0, allow an additional calculation, so we don't delay more than necessary
+// plus, another helper when there are no external blocking checker
+
+bool tryDelay(CoreClock::time_point start, CoreClock::duration timeout, CoreClock::duration interval) {
+    auto expired = CoreClock::now() - start;
+    if (expired >= timeout) {
+        return true;
     }
+
+    delay(std::min((timeout - expired), interval));
+    return false;
+}
+
+void blockingDelay(CoreClock::duration timeout, CoreClock::duration interval) {
+    blockingDelay(timeout, interval, []() {
+        return false;
+    });
 }
 
 void blockingDelay(CoreClock::duration timeout) {
@@ -101,40 +166,71 @@ void blockingDelay(CoreClock::duration timeout) {
 
 } // namespace time
 
-namespace {
 namespace memory {
+namespace {
 
 // returns 'total stack size' minus 'un-painted area'
 // needs re-painting step, as this never decreases
-unsigned long freeStack() {
+size_t freeStack() {
     return ESP.getFreeContStack();
 }
 
-HeapStats heapStats() {
-    HeapStats stats;
-    ESP.getHeapStats(&stats.available, &stats.usable, &stats.frag_pct);
-    return stats;
-}
+// esp8266 normally only has a one single heap area, located in DRAM just 'before' the SYS stack
+// since Core 3.x.x, internal C-level allocator was extended to support multiple contexts
+// - external SPI RAM chip (but, this may not work with sizes above 65KiB on older Cores, check the actual version)
+// - part of the IRAM, which will be specifically excluded from the CACHE by using a preprocessed linker file
+//
+// API expects us to use the same C API as usual - malloc, realloc, calloc, etc.
+// Only now we are able to switch 'contexts' and receive different address range, currenty via `umm_{push,pop}_heap(ID)`
+// (e.g. UMM_HEAP_DRAM, UMM_HEAP_IRAM, ... which techically is an implementation detail, and ESP::... methods should be used)
+//
+// Meaning, what happens below is heavily dependant on the when and why these functions are called
 
-void heapStats(HeapStats& stats) {
-    stats = heapStats();
-}
-
-unsigned long freeHeap() {
-    return ESP.getFreeHeap();
+size_t freeHeap() {
+    return system_get_free_heap_size();
 }
 
 decltype(freeHeap()) initialFreeHeap() {
     static const auto value = ([]() {
-        return freeHeap();
+        return system_get_free_heap_size();
     })();
 
     return value;
 }
 
+// see https://github.com/esp8266/Arduino/pull/8440
+template <typename T>
+using HasHeapStatsFixBase = decltype(std::declval<T>().getHeapStats(
+    std::declval<uint32_t*>(), std::declval<uint32_t*>(), std::declval<uint8_t*>()));
+
+template <typename T>
+using HasHeapStatsFix = is_detected<HasHeapStatsFixBase, T>;
+
+template <typename T>
+HeapStats heapStats(T& instance, std::true_type) {
+    HeapStats out;
+    instance.getHeapStats(&out.available, &out.usable, &out.fragmentation);
+    return out;
+}
+
+template <typename T>
+HeapStats heapStats(T& instance, std::false_type) {
+    HeapStats out;
+    uint16_t usable{0};
+    instance.getHeapStats(&out.available, &usable, &out.fragmentation);
+    out.usable = usable;
+    return out;
+}
+
+HeapStats heapStats() {
+    return heapStats(ESP, HasHeapStatsFix<EspClass>{});
+}
+
+} // namespace
 } // namespace memory
 
 namespace boot {
+namespace {
 
 String serialize(CustomResetReason reason) {
     const __FlashStringHelper* ptr { nullptr };
@@ -259,10 +355,14 @@ Ticker timer;
 bool flag { true };
 
 } // namespace internal
+}
+
+namespace {
 
 #if SYSTEM_CHECK_ENABLED
 namespace stability {
 namespace build {
+namespace {
 
 constexpr uint8_t ChecksMin { 0 };
 constexpr uint8_t ChecksMax { SYSTEM_CHECK_MAX };
@@ -272,7 +372,10 @@ static_assert(ChecksMin < ChecksMax, "");
 constexpr espurna::duration::Seconds CheckTime { SYSTEM_CHECK_TIME };
 static_assert(CheckTime > espurna::duration::Seconds::min(), "");
 
+} // namespace
 } // namespace build
+
+namespace {
 
 void init() {
     // on cold boot / rst, bumps count to 2 so we don't end up
@@ -294,6 +397,7 @@ bool check() {
     return internal::flag;
 }
 
+} // namespace
 } // namespace stability
 #endif
 
@@ -319,6 +423,7 @@ void customReason(CustomResetReason reason) {
     internal::persistent_data.reason(reason);
 }
 
+} // namespace
 } // namespace boot
 
 // -----------------------------------------------------------------------------
@@ -326,14 +431,17 @@ void customReason(CustomResetReason reason) {
 // Calculated load average of the loop() as a percentage (notice that this may not be accurate)
 namespace load_average {
 namespace build {
+namespace {
 
-constexpr size_t ValueMin { 0 };
-constexpr size_t ValueMax { 100 };
+static constexpr size_t ValueMax { 100 };
 
 static constexpr espurna::duration::Seconds Interval { LOADAVG_INTERVAL };
 static_assert(Interval <= espurna::duration::Seconds(90), "");
 
+} // namespace
 } // namespace build
+
+namespace {
 
 using TimeSource = espurna::time::SystemClock;
 using Type = unsigned long;
@@ -380,8 +488,8 @@ void loop() {
         : 0;
 }
 
-} // namespace load_average
 } // namespace
+} // namespace load_average
 
 // -----------------------------------------------------------------------------
 
@@ -442,13 +550,22 @@ constexpr Mask value() {
 } // namespace build
 
 namespace settings {
+namespace keys {
+namespace {
+
+alignas(4) static constexpr char Mode[] PROGMEM = "hbMode";
+alignas(4) static constexpr char Interval[] PROGMEM = "hbInterval";
+alignas(4) static constexpr char Report[] PROGMEM = "hbReport";
+
+} // namespace
+} // namespace keys
 
 Mode mode() {
-    return getSetting("hbMode", build::mode());
+    return getSetting(keys::Mode, build::mode());
 }
 
 espurna::duration::Seconds interval() {
-    return getSetting("hbInterval", build::interval());
+    return getSetting(keys::Interval, build::interval());
 }
 
 Mask value() {
@@ -456,7 +573,7 @@ Mask value() {
     // first bit as a flag to enable all of the messages
     static constexpr Mask MaskAll { 1 };
 
-    auto value = getSetting("hbReport", build::value());
+    auto value = getSetting(keys::Report, build::value());
     if (value == MaskAll) {
         value = std::numeric_limits<Mask>::max();
     }
@@ -629,29 +746,32 @@ void init() {
 } // namespace
 } // namespace heartbeat
 
-namespace {
-
 #if WEB_SUPPORT
 namespace web {
+namespace {
 
 void onConnected(JsonObject& root) {
-    root["hbReport"] = heartbeat::settings::value();
-    root["hbInterval"] = heartbeat::settings::interval().count();
-    root["hbMode"] = static_cast<int>(heartbeat::settings::mode());
+  root[FPSTR(heartbeat::settings::keys::Report)] = heartbeat::settings::value();
+  root[FPSTR(heartbeat::settings::keys::Interval)] =
+      heartbeat::settings::interval().count();
+  root[FPSTR(heartbeat::settings::keys::Mode)] =
+      ::settings::internal::serialize(heartbeat::settings::mode());
 }
 
-bool onKeyCheck(const char * key, JsonVariant& value) {
-    if (strncmp(key, "sys", 3) == 0) return true;
-    if (strncmp(key, "hb", 2) == 0) return true;
-    return false;
+bool onKeyCheck(const char* key, JsonVariant&) {
+    const auto view = ::settings::StringView{ key };
+    return ::settings::query::samePrefix(view, STRING_VIEW("sys"))
+        || ::settings::query::samePrefix(view, STRING_VIEW("hb"));
 }
 
+} // namespace
 } // namespace web
 #endif
 
 // Allow to schedule a reset at the next loop
 // Store reset reason both here and in for the next boot
 namespace internal {
+namespace {
 
 Ticker reset_timer;
 auto reset_reason = CustomResetReason::None;
@@ -661,7 +781,10 @@ void reset(CustomResetReason reason) {
     reset_reason = reason;
 }
 
+} // namespace
 } // namespace internal
+
+namespace {
 
 // raw reboot call, effectively:
 // ```
@@ -691,7 +814,9 @@ static constexpr espurna::duration::Milliseconds ShortDelayForReset { 500 };
 void deferredReset(duration::Milliseconds delay, CustomResetReason reason) {
     DEBUG_MSG_P(PSTR("[MAIN] Requested reset: %s\n"),
         espurna::boot::serialize(reason).c_str());
-    internal::reset_timer.once_ms(delay.count(), internal::reset, reason);
+    internal::reset_timer.once_ms(delay.count(), [reason]() {
+        internal::reset(reason);
+    });
 }
 
 // SDK reserves last 16KiB on the flash for it's own means
@@ -751,15 +876,11 @@ HeapStats systemHeapStats() {
     return espurna::memory::heapStats();
 }
 
-void systemHeapStats(HeapStats& stats) {
-    espurna::memory::heapStats(stats);
-}
-
-unsigned long systemFreeHeap() {
+size_t systemFreeHeap() {
     return espurna::memory::freeHeap();
 }
 
-unsigned long systemInitialFreeHeap() {
+size_t systemInitialFreeHeap() {
     return espurna::memory::initialFreeHeap();
 }
 

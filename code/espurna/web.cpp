@@ -100,7 +100,7 @@ bool AsyncWebPrint::_addBuffer() {
 void AsyncWebPrint::_prepareRequest() {
     _state = State::Sending;
 
-    auto *response = _request->beginChunkedResponse(_config.mimeType, [this](uint8_t *buffer, size_t maxLen, size_t index) -> size_t {
+    auto *response = _request->beginChunkedResponse(_config.mimeType, [this](uint8_t *buffer, size_t maxLen, size_t) -> size_t {
         switch (_state) {
         case State::None:
             return RESPONSE_TRY_AGAIN;
@@ -221,7 +221,7 @@ bool _webConfigSuccess = false;
 std::vector<web_request_callback_f> _web_request_callbacks;
 std::vector<web_body_callback_f> _web_body_callbacks;
 
-constexpr unsigned long WebConfigBufferMax { 4096ul };
+static constexpr size_t WebConfigBufferMax { 4096 };
 
 } // namespace
 
@@ -350,7 +350,7 @@ void _onPostConfig(AsyncWebServerRequest *request) {
     request->send(_webConfigSuccess ? 200 : 400);
 }
 
-void _onPostConfigFile(AsyncWebServerRequest *request, String filename, size_t index, uint8_t *data, size_t len, bool final) {
+void _onPostConfigFile(AsyncWebServerRequest *request, String, size_t index, uint8_t *data, size_t len, bool final) {
 
     if (!webAuthenticate(request)) {
         _webRequestAuth(request);

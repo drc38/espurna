@@ -29,54 +29,86 @@ Copyright (C) 2016-2019 by Xose Pérez <xose dot perez at gmail dot com>
 
 namespace web {
 namespace ws {
+namespace build {
+namespace {
+
+constexpr uint16_t port() {
+    return WEB_PORT;
+}
+
+constexpr bool authentication() {
+    return 1 == WS_AUTHENTICATION;
+}
+
+} // namespace
+} // namespace build
+
 namespace internal {
 namespace {
 
-template <typename T>
-void populateSchema(JsonArray& schema, const T& pairs) {
-    for (auto& pair : pairs) {
-        schema.add(pair.key);
-    }
-}
-
-template <typename T>
-void populateEntry(JsonArray& entry, const T& pairs, size_t index) {
-    for (auto& pair : pairs) {
-        pair.callback(entry, index);
-    }
-}
+alignas(4) static constexpr char SchemaKey[] PROGMEM = "schema";
 
 } // namespace
 } // namespace internal
 
-EnumerableConfig::EnumerableConfig(JsonObject& root, const __FlashStringHelper* name) :
-    _root(root.createNestedObject(name))
+EnumerableConfig::EnumerableConfig(JsonObject& root, Name name) :
+    _root(root.createNestedObject(FPSTR(name.c_str())))
 {}
 
-void EnumerableConfig::operator()(const __FlashStringHelper* name, Iota iota, Check check, Pairs&& pairs)
-{
-    if (!iota) {
+void EnumerableConfig::operator()(Name name, ::settings::Iota iota, Check check, Setting* begin, Setting* end) {
+    JsonArray& entries = _root.createNestedArray(FPSTR(name.c_str()));
+
+    if (_root.containsKey(FPSTR(internal::SchemaKey))) {
         return;
     }
 
-    if (!_root.containsKey(FPSTR(SchemaKey))) {
-        JsonArray& schema = _root.createNestedArray(FPSTR(SchemaKey));
-        internal::populateSchema(schema, pairs);
+    JsonArray& schema = _root.createNestedArray(FPSTR(internal::SchemaKey));
+    for (auto it = begin; it != end; ++it) {
+        schema.add(FPSTR((*it).prefix().c_str()));
+    }
 
-        JsonArray& entries = _root.createNestedArray(name);
-        do {
-            if (!check || check(*iota)) {
-                JsonArray& entry = entries.createNestedArray();
-                internal::populateEntry(entry, pairs, (*iota));
+    while (iota) {
+        if (!check || check(*iota)) {
+            JsonArray& entry = entries.createNestedArray();
+            for (auto it = begin; it != end; ++it) {
+                entry.add((*it).value(*iota));
             }
+        }
 
-            ++iota;
-        } while (iota);
+        ++iota;
     }
 }
 
-alignas(4) const char EnumerableConfig::SchemaKey[] PROGMEM = "schema";
-static_assert(alignof(EnumerableConfig::SchemaKey) == 4, "");
+EnumerablePayload::EnumerablePayload(JsonObject& root, Name name) :
+    _root(root.createNestedObject(FPSTR(name.c_str())))
+{}
+
+void EnumerablePayload::operator()(Name name, settings::Iota iota, Check check, Pairs&& pairs) {
+    JsonArray& entries = _root.createNestedArray(FPSTR(name.c_str()));
+
+    if (_root.containsKey(FPSTR(internal::SchemaKey))) {
+        return;
+    }
+
+    JsonArray& schema = _root.createNestedArray(FPSTR(internal::SchemaKey));
+
+    const auto begin = std::begin(pairs);
+    const auto end = std::end(pairs);
+    for (auto it = begin; it != end; ++it) {
+        schema.add(FPSTR((*it).name.c_str()));
+    }
+
+    while (iota) {
+        if (!check || check(*iota)) {
+            JsonArray& entry = entries.createNestedArray();
+            for (auto it = begin; it != end; ++it) {
+                (*it).generate(entry, *iota);
+            }
+        }
+
+        ++iota;
+    }
+}
 
 } // namespace ws
 } // namespace web
@@ -115,30 +147,36 @@ struct BaseTimeFormat<long long> {
 
 constexpr char BaseTimeFormat<long long>::Format[];
 
+String _wsFormatTime(time_t timestamp) {
+    using SystemTimeFormat = BaseTimeFormat<time_t>;
+
+    char buffer[SystemTimeFormat::Size * 4];
+    snprintf(buffer, sizeof(buffer),
+        SystemTimeFormat::Format, timestamp);
+
+    return String(buffer);
+}
+
 void _wsUpdate(JsonObject& root) {
-    root["heap"] = systemFreeHeap();
-    root["uptime"] = systemUptime().count();
-    root["rssi"] = WiFi.RSSI();
-    root["loadaverage"] = systemLoadAverage();
-    if (ADC_MODE_VALUE == ADC_VCC) {
-        root["vcc"] = ESP.getVcc();
-    } else {
-        root["vcc"] = "N/A (TOUT) ";
-    }
+    root[F("heap")] = systemFreeHeap();
+    root[F("uptime")] = systemUptime().count();
+    root[F("rssi")] = WiFi.RSSI();
+    root[F("loadaverage")] = systemLoadAverage();
+#if ADC_MODE_VALUE == ADC_VCC
+    root[F("vcc")] = ESP.getVcc();
+#else
+    root[F("vcc")] = F("N/A (TOUT) ");
+#endif
 #if NTP_SUPPORT
     if (ntpSynced()) {
-        auto info = ntpInfo();
-
         // XXX: arduinojson default config will silently downcast
         //      double to float and (u)int64_t to (u)int32_t.
         //      convert to string instead, and assume the int is handled correctly
-        using SystemTimeFormat = BaseTimeFormat<time_t>;
-        char buffer[SystemTimeFormat::Size * 4];
-        sprintf(buffer, SystemTimeFormat::Format, info.now);
-        root["now"] = String(buffer);
+        auto info = ntpInfo();
 
-        root["nowString"] = info.utc;
-        root["nowLocalString"] = info.local.length()
+        root[F("now")] = _wsFormatTime(info.now);
+        root[F("nowString")] = info.utc;
+        root[F("nowLocalString")] = info.local.length()
             ? info.local
             : info.utc;
     }
@@ -350,14 +388,14 @@ void WsDebug::send(bool connected) {
 
     if (!_flush) return;
     // ref: http://arduinojson.org/v5/assistant/
-    // {"weblog": {"msg":[...],"pre":[...]}}
+    // {"log": {"msg":[...],"pre":[...]}}
     DynamicJsonBuffer jsonBuffer(2*JSON_ARRAY_SIZE(_messages.size()) + JSON_OBJECT_SIZE(1) + JSON_OBJECT_SIZE(2));
 
     JsonObject& root = jsonBuffer.createObject();
-    JsonObject& weblog = root.createNestedObject("weblog");
+    JsonObject& log = root.createNestedObject("log");
 
-    JsonArray& msg_array = weblog.createNestedArray("msg");
-    JsonArray& pre_array = weblog.createNestedArray("pre");
+    JsonArray& msg_array = log.createNestedArray("msg");
+    JsonArray& pre_array = log.createNestedArray("pre");
 
     for (auto& msg : _messages) {
         pre_array.add(msg.first.c_str());
@@ -386,72 +424,34 @@ bool wsDebugSend(const char* prefix, const char* message) {
 namespace {
 
 // Check the existing setting before saving it
-// TODO: this should know of the default values, somehow?
+// (we only care about the settings storage, don't mind the build values)
 bool _wsStore(const String& key, const String& value) {
-    if (!hasSetting(key) || value != getSetting(key)) {
-        return setSetting(key, value);
+    auto current = settings::internal::get(key);
+    if (!current || (current.ref() != value)) {
+        return settings::internal::set(key, value);
     }
 
     return false;
-}
-
-bool _wsStore(const String& prefix, JsonArray& values) {
-    bool changed { false };
-
-    size_t index { 0 };
-    for (auto& element : values) {
-        const auto value = element.as<String>();
-        const auto key = SettingsKey {prefix, index};
-
-        auto kv = settings::internal::get(key.value());
-        if (!kv || (value != kv.ref())) {
-            setSetting(key, value);
-            changed = true;
-        }
-        ++index;
-    }
-
-    // Remove every key with index greater than the array size
-    // TODO: should this be delegated to the modules, since they know better how much entities they could store?
-    constexpr size_t SettingsMaxListCount { SETTINGS_MAX_LIST_COUNT };
-    for (auto next_index = index; next_index < SettingsMaxListCount; ++next_index) {
-        if (!delSetting({prefix, next_index})) {
-            break;
-        }
-        changed = true;
-    }
-
-    return changed;
 }
 
 // TODO: generate "accepted" keys in the initial phase of the connection?
 // TODO: is value ever used... by anything?
 bool _wsCheckKey(const char* key, JsonVariant& value) {
+#if NTP_SUPPORT
+    if (strncmp_P(key, PSTR("ntpTZ"), strlen(key)) == 0) {
+        _wsResetUpdateTimer();
+        return true;
+    }
+#endif
+
+    if (strncmp_P(key, PSTR("adminPass"), strlen(key)) == 0) {
+        const auto pass = getAdminPass();
+        return !pass.equalsConstantTime(value.as<String>());
+    }
+
     for (auto& callback : _ws_callbacks.on_keycheck) {
         if (callback(key, value)) {
             return true;
-        }
-    }
-    return false;
-}
-
-bool _wsProcessAdminPass(JsonVariant& value) {
-    auto current = getAdminPass();
-    if (value.is<String>()) {
-        auto string = value.as<String>();
-        if (!current.equalsConstantTime(string)) {
-            setSetting("adminPass", string);
-            return true;
-        }
-    } else if (value.is<JsonArray&>()) {
-        JsonArray& values = value.as<JsonArray&>();
-        if (values.size() == 2) {
-            auto lhs = values[0].as<String>();
-            auto rhs = values[1].as<String>();
-            if ((lhs == rhs) && (!current.equalsConstantTime(lhs))) {
-                setSetting("adminPass", lhs);
-                return true;
-            }
         }
     }
 
@@ -465,18 +465,18 @@ void _wsPostParse(uint32_t client_id, bool save, bool reload) {
 
         wsPost(client_id, [save, reload](JsonObject& root) {
             if (reload) {
-                root["action"] = F("reload");
+                root[F("action")] = F("reload");
             } else if (save) {
-                root["saved"] = true;
+                root[F("saved")] = true;
             }
-            root["message"] = F("Changes saved");
+            root[F("message")] = F("Changes saved");
         });
 
         return;
     }
 
     wsPost(client_id, [](JsonObject& root) {
-        root["message"] = F("No changes detected");
+        root[F("message")] = F("No changes detected");
     });
 }
 
@@ -503,7 +503,7 @@ void _wsParse(AsyncWebSocketClient *client, uint8_t * payload, size_t length) {
     JsonObject& root = jsonBuffer.parseObject((char *) payload);
     if (!root.success()) {
         wsPost(client_id, [](JsonObject& root) {
-            root["message"] = F("JSON parsing error");
+            root[F("message")] = F("JSON parsing error");
         });
         return;
     }
@@ -542,16 +542,14 @@ void _wsParse(AsyncWebSocketClient *client, uint8_t * payload, size_t length) {
         JsonObject& data = root["data"];
         if (data.success()) {
             if (strcmp(action, "restore") == 0) {
-                String message;
-                if (settingsRestoreJson(data)) {
-                    message = F("Changes saved, you should be able to reboot now");
-                } else {
-                    message = F("Cound not restore the configuration, see the debug log for more information");
-                }
+                const auto* message = settingsRestoreJson(data)
+                    ? F("Changes saved, you should be able to reboot now")
+                    : F("Cound not restore the configuration, see the debug log for more information");
+
                 wsPost(client_id, [message](JsonObject& root) {
-                    // TODO: mildly inefficient, move() the object into lambda
-                    root["message"] = message;
+                    root[F("message")] = message;
                 });
+
                 return;
             }
 
@@ -561,95 +559,69 @@ void _wsParse(AsyncWebSocketClient *client, uint8_t * payload, size_t length) {
         }
     };
 
-    // Check configuration -----------------------------------------------------
+    // Update settings in-place. Unlike 'restore', this only
+    // removes keys explicitly set in the 'del' list
+    JsonObject& settings = root[F("settings")];
+    if (!settings.success()) {
+        return;
+    }
 
-    JsonObject& config = root["config"];
-    if (config.success()) {
+    bool save { false };
+    bool reload { false };
 
-        DEBUG_MSG_P(PSTR("[WEBSOCKET] Parsing configuration data\n"));
+    JsonArray& toDelete = settings["del"];
+    for (const auto& value : toDelete) {
+        delSetting(value.as<String>());
+    }
 
-        bool save = false;
-        bool reload = false;
-
-        for (auto& kv : config) {
-            bool changed = false;
-
-            String key = kv.key;
-            JsonVariant& value = kv.value;
-
-            if (key == "adminPass") {
-                if (_wsProcessAdminPass(value)) {
-                    save = true;
-                    reload = true;
-                    continue;
-                }
-            } else if (key == "webPort") {
-                if (value.as<int>() == 0) {
-                    continue;
-                } else if (value.as<int>() > static_cast<int>(std::numeric_limits<uint16_t>::max())) {
-                    continue;
-                }
-            }
-#if NTP_SUPPORT
-            else if (key == "ntpTZ") {
-                _wsResetUpdateTimer();
-            }
-#endif
-
-            if (!_wsCheckKey(key.c_str(), value)) {
-                delSetting(key);
-                continue;
-            }
-
-            // Store values
-            if (value.is<JsonArray&>()) {
-                if (_wsStore(key, value.as<JsonArray&>())) changed = true;
-            } else {
-                if (_wsStore(key, value.as<String>())) changed = true;
-            }
-
-            // Update flags if value has changed
-            if (changed) {
-                save = true;
-            }
+    // TODO: pass key as string, we always attempt to use it as such
+    JsonObject& toAssign = settings["set"];
+    for (auto& kv : toAssign) {
+        String key = kv.key;
+        JsonVariant& value = kv.value;
+        if (!_wsCheckKey(key.c_str(), value)) {
+            continue;
         }
 
-        _wsPostParse(client_id, save, reload);
+        if (_wsStore(key, value.as<String>())) {
+            save = true;
+        }
     }
+
+    _wsPostParse(client_id, save, reload);
 }
 
-bool _wsOnKeyCheck(const char * key, JsonVariant& value) {
-    if (strncmp(key, "ws", 2) == 0) return true;
-    if (strncmp(key, "admin", 5) == 0) return true;
-    if (strncmp(key, "hostname", 8) == 0) return true;
-    if (strncmp(key, "desc", 4) == 0) return true;
-    if (strncmp(key, "webPort", 7) == 0) return true;
-    return false;
+bool _wsOnKeyCheck(const char* key, JsonVariant&) {
+    const auto keylen = strlen(key);
+    return (strncmp_P(key, PSTR("ws"), 2) == 0)
+        || (strncmp_P(key, PSTR("adminPass"), keylen) == 0)
+        || (strncmp_P(key, PSTR("hostname"), keylen) == 0)
+        || (strncmp_P(key, PSTR("desc"), keylen) == 0)
+        || (strncmp_P(key, PSTR("webPort"), keylen) == 0);
 }
 
 void _wsOnConnected(JsonObject& root) {
-    root["webMode"] = WEB_MODE_NORMAL;
+    root[F("webMode")] = WEB_MODE_NORMAL;
 
-    root["app_name"] = getAppName();
-    root["app_version"] = getVersion();
-    root["app_build"] = buildTime();
-    root["device"] = getDevice();
-    root["manufacturer"] = getManufacturer();
-    root["chipid"] = getChipId().c_str();
-    root["mac"] = getFullChipId().c_str();
-    root["bssid"] = WiFi.BSSIDstr();
-    root["channel"] = WiFi.channel();
-    root["hostname"] = getHostname();
-    root["desc"] = getDescription();
-    root["network"] = wifiStaSsid();
-    root["deviceip"] = wifiStaIp().toString();
-    root["sketch_size"] = ESP.getSketchSize();
-    root["free_size"] = ESP.getFreeSketchSpace();
-    root["sdk"] = ESP.getSdkVersion();
-    root["core"] = getCoreVersion();
+    root[F("app_name")] = getAppName();
+    root[F("app_version")] = getVersion();
+    root[F("app_build")] = buildTime();
+    root[F("device")] = getDevice();
+    root[F("manufacturer")] = getManufacturer();
+    root[F("chipid")] = getFullChipId().c_str();
+    root[F("bssid")] = WiFi.BSSIDstr();
+    root[F("channel")] = WiFi.channel();
+    root[F("hostname")] = getHostname();
+    root[F("desc")] = getDescription();
+    root[F("network")] = wifiStaSsid();
+    root[F("deviceip")] = wifiStaIp().toString();
+    root[F("sketch_size")] = ESP.getSketchSize();
+    root[F("free_size")] = ESP.getFreeSketchSpace();
+    root[F("sdk")] = ESP.getSdkVersion();
+    root[F("core")] = getCoreVersion();
 
-    root["webPort"] = getSetting("webPort", WEB_PORT);
-    root["wsAuth"] = getSetting("wsAuth", 1 == WS_AUTHENTICATION);
+    root[F("webPort")] = getSetting(F("webPort"), web::ws::build::port());
+    root[F("wsAuth")] = getSetting(F("wsAuth"), web::ws::build::authentication());
 }
 
 void _wsConnected(uint32_t client_id) {

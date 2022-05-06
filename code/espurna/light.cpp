@@ -55,7 +55,7 @@ static_assert(std::is_trivially_copyable<Light::MiredsRange>::value, "");
 namespace Light {
 
 // TODO: unless we are building with latest Core versions and -std=c++17, these need to be explicitly bound to at least one object file
-#if __cplusplus <= 201703L
+#if __cplusplus < 201703L
 constexpr long Rgb::Min;
 constexpr long Rgb::Max;
 
@@ -691,22 +691,16 @@ namespace internal {
 
 template <>
 my92xx_model_t convert(const String& value) {
-    if (value.length() == 1) {
-        switch (*value.c_str()) {
-        case 0x01:
-            return MY92XX_MODEL_MY9291;
-        case 0x02:
-            return MY92XX_MODEL_MY9231;
-        }
-    } else {
-        if (value == "9291") {
-            return MY92XX_MODEL_MY9291;
-        } else if (value == "9231") {
-            return MY92XX_MODEL_MY9231;
-        }
-    }
+    alignas(4) static constexpr char MY9291[] PROGMEM = "9291";
+    alignas(4) static constexpr char MY9231[] PROGMEM = "9231";
 
-    return Light::build::my92xxModel();
+    using Options = std::array<::settings::options::Enumeration<my92xx_model_t>, 2>;
+    static constexpr Options options {
+        {{MY92XX_MODEL_MY9291, MY9291},
+         {MY92XX_MODEL_MY9231, MY9231}}
+    };
+
+    return convert(options, value, Light::build::my92xxModel());
 }
 
 } // namespace internal
@@ -2344,7 +2338,7 @@ void _lightWebSocketStatus(JsonObject& root) {
 }
 
 void _lightWebSocketOnVisible(JsonObject& root) {
-    wsPayloadModule(root, "color");
+    wsPayloadModule(root, "light");
 }
 
 void _lightWebSocketOnConnected(JsonObject& root) {
