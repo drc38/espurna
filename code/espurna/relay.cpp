@@ -286,7 +286,7 @@ enum class Mode {
 } // namespace relay
 } // namespace espurna
 
-#include "relay_pulse.ipp"
+#include "relay_pulse.h"
 
 namespace espurna {
 namespace relay {

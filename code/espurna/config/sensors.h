@@ -862,7 +862,7 @@
 #endif
 
 #ifndef NTC_R_DOWN
-#define NTC_R_DOWN                      11500   // Resistor downstream, set to 0 if none
+#define NTC_R_DOWN                      9750   // Resistor downstream, set to 0 if none
 #endif
 
 #ifndef NTC_T0
